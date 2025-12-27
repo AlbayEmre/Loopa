@@ -1,0 +1,114 @@
+from firebase_admin import firestore
+from app.core.config import get_db
+from app.models.listing import ListingCreate, ListingUpdate
+from app.services.user_service import user_service
+from datetime import datetime
+import uuid
+import random
+
+class ListingService:
+    def __init__(self):
+        self._db = None
+        self._collection = None
+
+    @property
+    def db(self):
+        if self._db is None:
+            self._db = get_db()
+        return self._db
+
+    @property
+    def collection(self):
+        if self._collection is None:
+            self._collection = self.db.collection('listings')
+        return self._collection
+
+    def get_listings(self, category: str = None, type: str = None, city: str = None, district: str = None, owner_id: str = None, search_text: str = None):
+        query = self.collection
+        if owner_id:
+            query = query.where(filter=firestore.FieldFilter("owner_id", "==", owner_id))
+        if category:
+            query = query.where(filter=firestore.FieldFilter("category", "==", category))
+        if type:
+            query = query.where(filter=firestore.FieldFilter("type", "==", type))
+        if city:
+            query = query.where(filter=firestore.FieldFilter("location.city", "==", city))
+        if district:
+            query = query.where(filter=firestore.FieldFilter("location.district", "==", district))
+        
+        # If searching, we fetch a bit more to ensure we find matches
+        limit = 1000 if search_text else 50
+        docs = query.limit(limit).stream()
+        results = [doc.to_dict() for doc in docs]
+        
+        if search_text:
+            st = search_text.lower()
+            results = [
+                item for item in results 
+                if st in item.get('title', '').lower() or st in item.get('description', '').lower()
+            ]
+            
+        return results
+
+    def get_listings_by_location(self, city: str, limit: int = 50):
+        query = self.collection.where(filter=firestore.FieldFilter("location.city", "==", city))
+        docs = query.limit(limit).stream()
+        return [doc.to_dict() for doc in docs]
+
+    def get_random_listings(self, limit: int = 50):
+        # Fetch a larger pool of recent listings (e.g. 100) and sample from them
+        # Note: This is a simple implementation. For large datasets, use a better approach.
+        query = self.collection.order_by("created_at", direction=firestore.Query.DESCENDING).limit(100)
+        docs = query.stream()
+        all_listings = [doc.to_dict() for doc in docs]
+        
+        if len(all_listings) <= limit:
+            return all_listings
+        
+        return random.sample(all_listings, limit)
+
+    def get_listing(self, listing_id: str):
+        doc = self.collection.document(listing_id).get()
+        if doc.exists:
+            return doc.to_dict()
+        return None
+
+    def create_listing(self, listing: ListingCreate, owner_uid: str):
+        # Fetch user details for denormalization
+        owner = user_service.get_user(owner_uid)
+        if not owner:
+            # Fallback or error? Let's assume user must exist
+            raise ValueError("User not found")
+
+        listing_data = listing.model_dump()
+        listing_id = f"listing_{uuid.uuid4().hex[:8]}"
+        
+        listing_data['id'] = listing_id
+        listing_data['owner_id'] = owner_uid
+        listing_data['owner_name'] = owner.get('display_name', 'Unknown')
+        listing_data['owner_avatar'] = owner.get('photo_url')
+        listing_data['created_at'] = datetime.utcnow()
+        listing_data['updated_at'] = datetime.utcnow()
+        
+        self.collection.document(listing_id).set(listing_data)
+        return listing_data
+
+    def update_listing(self, listing_id: str, listing_update: ListingUpdate, owner_uid: str):
+        doc_ref = self.collection.document(listing_id)
+        doc = doc_ref.get()
+        
+        if not doc.exists:
+            return None
+            
+        current_data = doc.to_dict()
+        if current_data['owner_id'] != owner_uid:
+            raise PermissionError("Not authorized to update this listing")
+
+        update_data = listing_update.model_dump(exclude_unset=True)
+        if update_data:
+            update_data['updated_at'] = datetime.utcnow()
+            doc_ref.update(update_data)
+            
+        return doc_ref.get().to_dict()
+
+listing_service = ListingService()
