@@ -206,6 +206,6 @@ Bu proje MIT lisansı altında lisanslanmıştır.
 
 **Projeyi beğendiyseniz ⭐ vermeyi unutmayın!**
 
-Made with ❤️ by [Emre Albay](https://github.com/AlbayEmre)
 
 </div>
+
